@@ -2,15 +2,19 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { useCallback, useState } from "react";
 import { Platform, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/unstable/reactivity";
 
 import { AndroidSheetHeader } from "../../../components/AndroidScreenHeader";
 import { AppText as Text, AppTextInput as TextInput } from "../../../components/AppText";
 import { cn } from "../../../lib/cn";
 import { useEnvironmentQuery } from "../../../state/query";
+import { useAtomCommand } from "../../../state/use-atom-command";
 import { useThreadSelection } from "../../../state/use-thread-selection";
 import { useSelectedThreadGitActions } from "../../../state/use-selected-thread-git-actions";
 import { useSelectedThreadGitState } from "../../../state/use-selected-thread-git-state";
 import { useSelectedThreadWorktree } from "../../../state/use-selected-thread-worktree";
+import { showGitActionResult } from "../../../state/use-vcs-action-state";
 import { vcsEnvironment } from "../../../state/vcs";
 import { SheetActionButton } from "./gitSheetComponents";
 
@@ -41,6 +45,7 @@ export function GitCommitSheet(_props: GitCommitSheetProps) {
   const allFiles = gitStatus.data?.workingTree?.files ?? [];
 
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
+  const [isGeneratingMessage, setIsGeneratingMessage] = useState(false);
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(new Set());
   const [isEditingFiles, setIsEditingFiles] = useState(false);
 
@@ -50,6 +55,43 @@ export function GitCommitSheet(_props: GitCommitSheetProps) {
   const selectedInsertions = selectedFiles.reduce((sum, file) => sum + file.insertions, 0);
   const selectedDeletions = selectedFiles.reduce((sum, file) => sum + file.deletions, 0);
   const selectedFilePreview = selectedFiles.slice(0, 3);
+
+  const generateCommitMessageAction = useAtomCommand(vcsEnvironment.generateCommitMessage, {
+    reportFailure: false,
+  });
+
+  const generateMessage = useCallback(async () => {
+    if (isGeneratingMessage || selectedThread === null || selectedThreadCwd === null) return;
+    setIsGeneratingMessage(true);
+    try {
+      const result = await generateCommitMessageAction({
+        environmentId: selectedThread.environmentId,
+        input: {
+          cwd: selectedThreadCwd,
+          ...(!allSelected ? { filePaths: selectedFiles.map((file) => file.path) } : {}),
+        },
+      });
+      if (AsyncResult.isFailure(result)) {
+        const error = Cause.squash(result.cause);
+        showGitActionResult({
+          type: "error",
+          title: "Could not generate commit message",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        });
+        return;
+      }
+      setDialogCommitMessage(result.value.commitMessage);
+    } finally {
+      setIsGeneratingMessage(false);
+    }
+  }, [
+    allSelected,
+    generateCommitMessageAction,
+    isGeneratingMessage,
+    selectedFiles,
+    selectedThread,
+    selectedThreadCwd,
+  ]);
 
   const runCommitAction = useCallback(
     async (featureBranch: boolean) => {
@@ -197,7 +239,18 @@ export function GitCommitSheet(_props: GitCommitSheetProps) {
         </View>
 
         <View className="gap-2">
-          <Text className="text-foreground text-sm font-t3-bold">Commit message</Text>
+          <View className="flex-row items-center justify-between gap-3">
+            <Text className="text-foreground text-sm font-t3-bold">Commit message</Text>
+            <Pressable
+              className="bg-subtle rounded-full px-3 py-2"
+              disabled={isGeneratingMessage || noneSelected}
+              onPress={() => void generateMessage()}
+            >
+              <Text className="text-foreground text-2xs font-t3-bold uppercase">
+                {isGeneratingMessage ? "Generating…" : "Generate"}
+              </Text>
+            </Pressable>
+          </View>
           <TextInput
             multiline
             value={dialogCommitMessage}

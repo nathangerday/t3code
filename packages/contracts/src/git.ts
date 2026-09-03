@@ -122,6 +122,19 @@ export const GitRunStackedActionInput = Schema.Struct({
 });
 export type GitRunStackedActionInput = typeof GitRunStackedActionInput.Type;
 
+export const GitGenerateCommitMessageInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  filePaths: Schema.optional(
+    Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),
+  ),
+});
+export type GitGenerateCommitMessageInput = typeof GitGenerateCommitMessageInput.Type;
+
+export const GitGenerateCommitMessageResult = Schema.Struct({
+  commitMessage: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(10_000)),
+});
+export type GitGenerateCommitMessageResult = typeof GitGenerateCommitMessageResult.Type;
+
 export const VcsListRefsInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   query: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),

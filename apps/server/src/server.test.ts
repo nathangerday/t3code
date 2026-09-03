@@ -24,6 +24,7 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
+  type GitGenerateCommitMessageInput,
   type OrchestrationCommand,
   type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
@@ -6305,6 +6306,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("routes websocket rpc git methods", () =>
     Effect.gen(function* () {
+      const generatedMessageInputs: GitGenerateCommitMessageInput[] = [];
       yield* buildAppUnderTest({
         config: {
           cwd: "/tmp/repo",
@@ -6393,6 +6395,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 );
 
                 return result;
+              }),
+            generateCommitMessage: (input) =>
+              Effect.sync(() => {
+                generatedMessageInputs.push(input);
+                return { commitMessage: "preview: demo" };
               }),
             resolvePullRequest: () =>
               Effect.succeed({
@@ -6533,6 +6540,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       if (lastStackedEvent?.kind === "action_finished") {
         assert.equal(lastStackedEvent.result.action, "commit");
       }
+
+      const generatedMessage = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.gitGenerateCommitMessage]({
+            cwd: "/tmp/repo",
+          }),
+        ),
+      );
+      assert.equal(generatedMessage.commitMessage, "preview: demo");
+      assert.deepEqual(generatedMessageInputs, [{ cwd: "/tmp/repo" }]);
 
       const resolvedPr = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>

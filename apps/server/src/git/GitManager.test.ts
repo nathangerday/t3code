@@ -2640,6 +2640,93 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("generateCommitMessage previews a message without committing", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nworld\n");
+
+      let generateCalls = 0;
+      const { manager } = yield* makeManager({
+        textGeneration: {
+          generateCommitMessage: () => {
+            generateCalls += 1;
+            return Effect.succeed({
+              subject: "Expand readme greeting",
+              body: "Add a second line.",
+            });
+          },
+        },
+      });
+
+      const result = yield* manager.generateCommitMessage({ cwd: repoDir });
+      expect(result.commitMessage).toBe("Expand readme greeting\n\nAdd a second line.");
+      expect(generateCalls).toBe(1);
+
+      // A preview must not write to history or the index.
+      const staged = yield* runGit(repoDir, ["diff", "--cached", "--name-only"]);
+      expect(staged.stdout.trim()).toBe("");
+      const status = yield* runGit(repoDir, ["status", "--porcelain"]);
+      expect(status.stdout.trim()).toBe("M README.md");
+      const log = yield* runGit(repoDir, ["rev-list", "--count", "HEAD"]);
+      expect(log.stdout.trim()).toBe("1");
+    }),
+  );
+
+  it.effect("generateCommitMessage scopes the preview to selected files", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "a.txt"), "a\n");
+      NodeFS.writeFileSync(NodePath.join(repoDir, "b.txt"), "b\n");
+
+      const generateInputs: TextGeneration.CommitMessageGenerationInput[] = [];
+      const { manager } = yield* makeManager({
+        textGeneration: {
+          generateCommitMessage: (input) => {
+            generateInputs.push(input);
+            return Effect.succeed({ subject: "Touch a", body: "" });
+          },
+        },
+      });
+
+      const result = yield* manager.generateCommitMessage({
+        cwd: repoDir,
+        filePaths: ["a.txt"],
+      });
+
+      expect(result.commitMessage).toBe("Touch a");
+      expect(generateInputs.length).toBe(1);
+      expect(generateInputs[0]?.stagedSummary).toContain("a.txt");
+      expect(generateInputs[0]?.stagedSummary).not.toContain("b.txt");
+    }),
+  );
+
+  it.effect("generateCommitMessage fails when there is nothing to commit", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+
+      let generateCalls = 0;
+      const { manager } = yield* makeManager({
+        textGeneration: {
+          generateCommitMessage: () => {
+            generateCalls += 1;
+            return Effect.succeed({ subject: "unused", body: "" });
+          },
+        },
+      });
+
+      const error = yield* manager.generateCommitMessage({ cwd: repoDir }).pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "GitManagerError",
+        operation: "generateCommitMessage",
+        cwd: repoDir,
+      });
+      expect(generateCalls).toBe(0);
+    }),
+  );
+
   it.effect("commits and pushes with upstream auto-setup when needed", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");

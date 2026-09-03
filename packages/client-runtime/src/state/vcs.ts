@@ -297,6 +297,12 @@ export function createVcsEnvironmentAtoms<R, E>(
       concurrency: vcsCommandConcurrency,
       onSettled: invalidateRefs,
     }),
+    generateCommitMessage: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:generate-commit-message",
+      tag: WS_METHODS.gitGenerateCommitMessage,
+      scheduler: vcsCommandScheduler,
+      concurrency: vcsCommandConcurrency,
+    }),
     refreshStatus: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:refresh-status",
       tag: WS_METHODS.vcsRefreshStatus,

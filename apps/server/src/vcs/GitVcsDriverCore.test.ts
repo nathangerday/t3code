@@ -1637,6 +1637,74 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.include(status, "?? selected1.txt");
       }),
     );
+
+    it.effect("readCommitContext reads changes without mutating the repository", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* writeTextFile(cwd, "README.md", "# test\nmodified\n");
+        yield* writeTextFile(cwd, "new-file.txt", "brand new\n");
+
+        const statusBefore = yield* git(cwd, ["status", "--porcelain"]);
+
+        const context = yield* driver.readCommitContext(cwd);
+        assert.isNotNull(context);
+        assert.include(context?.stagedSummary ?? "", "README.md");
+        assert.include(context?.stagedSummary ?? "", "new-file.txt");
+        assert.include(context?.stagedPatch ?? "", "+modified");
+        assert.include(context?.stagedPatch ?? "", "brand new");
+
+        // A preview must leave the index, the history, and the status untouched.
+        assert.equal(yield* git(cwd, ["status", "--porcelain"]), statusBefore);
+        assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "");
+        assert.equal(yield* git(cwd, ["rev-list", "--count", "HEAD"]), "1");
+      }),
+    );
+
+    it.effect("readCommitContext scopes the context to selected files", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* writeTextFile(cwd, "a.txt", "a\n");
+        yield* writeTextFile(cwd, "b.txt", "b\n");
+
+        const context = yield* driver.readCommitContext(cwd, ["a.txt"]);
+        assert.isNotNull(context);
+        assert.include(context?.stagedSummary ?? "", "a.txt");
+        assert.notInclude(context?.stagedSummary ?? "", "b.txt");
+      }),
+    );
+
+    it.effect("readCommitContext returns null when there are no changes", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        const context = yield* driver.readCommitContext(cwd);
+        assert.isNull(context);
+      }),
+    );
+
+    it.effect("readCommitContext works in a repository without commits", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.initRepo({ cwd });
+        yield* git(cwd, ["config", "user.email", "test@test.com"]);
+        yield* git(cwd, ["config", "user.name", "Test"]);
+        yield* writeTextFile(cwd, "first.txt", "first\n");
+
+        const context = yield* driver.readCommitContext(cwd);
+        assert.isNotNull(context);
+        assert.include(context?.stagedSummary ?? "", "first.txt");
+        assert.include(context?.stagedPatch ?? "", "first");
+      }),
+    );
   });
 
   describe("remote operations", () => {

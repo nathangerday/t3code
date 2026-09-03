@@ -1875,6 +1875,110 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       };
     });
 
+  const readCommitContext: GitVcsDriver.GitVcsDriver["Service"]["readCommitContext"] = Effect.fn(
+    "readCommitContext",
+  )(function* (cwd, filePaths) {
+    // Builds the same commit context as prepareCommitContext, but through a
+    // throwaway index and object directory so a generated-message preview
+    // never touches the repository's index, object store, or working tree.
+    const hasSelection = filePaths !== undefined && filePaths.length > 0;
+    const addArgs = hasSelection
+      ? ["--literal-pathspecs", "add", "-A", "--", ...filePaths]
+      : ["add", "-A"];
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const scratchDir = yield* fileSystem
+          .makeTempDirectoryScoped({
+            prefix: "t3-commit-context-",
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitCommandError({
+                  operation: "GitVcsDriver.readCommitContext",
+                  command: "temp-directory",
+                  cwd,
+                  detail: "Failed to create a scratch directory for the commit context preview.",
+                  cause,
+                }),
+            ),
+          );
+        const realObjectsPath = yield* executeGit(
+          "GitVcsDriver.readCommitContext.objectsPath",
+          cwd,
+          ["rev-parse", "--git-path", "objects"],
+        ).pipe(Effect.map((result) => path.resolve(cwd, result.stdout.trim())));
+        const scratchObjectsDir = path.join(scratchDir, "objects");
+        yield* fileSystem.makeDirectory(scratchObjectsDir, { recursive: true }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new GitCommandError({
+                operation: "GitVcsDriver.readCommitContext",
+                command: "temp-directory",
+                cwd,
+                detail: "Failed to create a scratch directory for the commit context preview.",
+                cause,
+              }),
+          ),
+        );
+        const scratchEnv = {
+          GIT_INDEX_FILE: path.join(scratchDir, "index"),
+          GIT_OBJECT_DIRECTORY: scratchObjectsDir,
+          GIT_ALTERNATE_OBJECT_DIRECTORIES: realObjectsPath,
+        };
+
+        const hasHead = yield* executeGit(
+          "GitVcsDriver.readCommitContext.hasHead",
+          cwd,
+          ["rev-parse", "--verify", "--quiet", "HEAD"],
+          { allowNonZeroExit: true },
+        ).pipe(Effect.map((result) => result.exitCode === 0));
+        const base = hasHead
+          ? "HEAD"
+          : yield* executeGit(
+              "GitVcsDriver.readCommitContext.emptyTree",
+              cwd,
+              ["hash-object", "-t", "tree", "--stdin"],
+              { env: scratchEnv, stdin: "" },
+            ).pipe(Effect.map((result) => result.stdout.trim()));
+
+        yield* executeGit("GitVcsDriver.readCommitContext.addSelected", cwd, addArgs, {
+          env: scratchEnv,
+        });
+
+        const stagedSummary = yield* executeGit(
+          "GitVcsDriver.readCommitContext.stagedSummary",
+          cwd,
+          ["diff", "--cached", base, "--name-status"],
+          { env: scratchEnv },
+        ).pipe(Effect.map((result) => result.stdout.trim()));
+        if (stagedSummary.length === 0) {
+          return null;
+        }
+
+        const stagedPatch = yield* executeGit(
+          "GitVcsDriver.readCommitContext.stagedPatch",
+          cwd,
+          ["diff", "--no-ext-diff", "--cached", base, "--patch", "--minimal"],
+          {
+            env: scratchEnv,
+            maxOutputBytes: PREPARED_COMMIT_PATCH_MAX_OUTPUT_BYTES,
+            appendTruncationMarker: true,
+          },
+        ).pipe(
+          Effect.map((result) =>
+            result.stdoutTruncated ? `${result.stdout}${OUTPUT_TRUNCATED_MARKER}` : result.stdout,
+          ),
+        );
+
+        return {
+          stagedSummary,
+          stagedPatch,
+        };
+      }),
+    );
+  });
+
   const commit: GitVcsDriver.GitVcsDriver["Service"]["commit"] = Effect.fn("commit")(function* (
     cwd,
     subject,
@@ -3295,6 +3399,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     statusDetailsLocal,
     statusDetailsRemote,
     prepareCommitContext,
+    readCommitContext,
     commit: (cwd, subject, body, options) =>
       withListRefsInvalidation(cwd, commit(cwd, subject, body, options)),
     pushCurrentBranch: (cwd, fallbackBranch, options) =>

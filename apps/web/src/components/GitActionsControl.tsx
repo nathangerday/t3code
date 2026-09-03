@@ -1017,6 +1017,7 @@ export default function GitActionsControl({
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const [isCommitDialogOpen, setIsCommitDialogOpen] = useState(false);
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
+  const [isGeneratingCommitMessage, setIsGeneratingCommitMessage] = useState(false);
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(new Set());
   const [isEditingFiles, setIsEditingFiles] = useState(false);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
@@ -1126,6 +1127,9 @@ export default function GitActionsControl({
 
   const initAction = useVcsInitAction(sourceControlScope);
   const runImmediateGitAction = useGitStackedAction(sourceControlScope);
+  const generateCommitMessageAction = useAtomCommand(vcsEnvironment.generateCommitMessage, {
+    reportFailure: false,
+  });
   const pullAction = useVcsPullAction(sourceControlScope);
   const isGitActionRunning = useSourceControlActionRunning(
     sourceControlScope,
@@ -1634,6 +1638,38 @@ export default function GitActionsControl({
     });
   };
 
+  const generateDialogCommitMessage = useEffectEvent(async () => {
+    if (!isCommitDialogOpen || isGeneratingCommitMessage) return;
+    if (activeEnvironmentId === null || gitCwd === null) return;
+    setIsGeneratingCommitMessage(true);
+    try {
+      const result = await generateCommitMessageAction({
+        environmentId: activeEnvironmentId,
+        input: {
+          cwd: gitCwd,
+          ...(!allSelected ? { filePaths: selectedFiles.map((f) => f.path) } : {}),
+        },
+      });
+      // The dialog may have been closed while the generation was running.
+      if (!isCommitDialogOpen) return;
+      if (result._tag === "Success") {
+        setDialogCommitMessage(result.value.commitMessage);
+        return;
+      }
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not generate commit message",
+          description: error instanceof Error ? error.message : "An error occurred.",
+          ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+        }),
+      );
+    } finally {
+      setIsGeneratingCommitMessage(false);
+    }
+  });
+
   const openChangedFileInEditor = useCallback(
     (filePath: string) => {
       if (!gitCwd) {
@@ -1960,7 +1996,18 @@ export default function GitActionsControl({
               </div>
             </div>
             <div className="space-y-1">
-              <p className="text-sm font-medium">Commit message (optional)</p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium">Commit message (optional)</p>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={isGeneratingCommitMessage || noneSelected}
+                  onClick={() => void generateDialogCommitMessage()}
+                >
+                  {isGeneratingCommitMessage && <Spinner className="size-3.5" aria-hidden />}
+                  {isGeneratingCommitMessage ? "Generating…" : "Generate"}
+                </Button>
+              </div>
               <Textarea
                 value={dialogCommitMessage}
                 onChange={(event) => setDialogCommitMessage(event.target.value)}

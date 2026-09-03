@@ -13,6 +13,13 @@ T3 Code works with the platforms your team already uses:
 
 ## What You Can Do
 
+### Commit With Confidence
+
+- Commit from the Git actions controls in the toolbar. Leave the commit message empty and T3 Code
+  generates one from your changes as it commits
+- Want to review the message first? Use **Generate** in the commit dialog to fill in a generated
+  message, then edit it before committing. Keeping the field empty still commits in one click
+
 ### Start Projects from Anywhere
 
 **Clone repositories directly**
