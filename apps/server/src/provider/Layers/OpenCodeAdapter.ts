@@ -61,6 +61,7 @@ import {
 import * as Option from "effect/Option";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
+const OPENCODE_PROMPT_ADMISSION_STATUS_ATTEMPTS = 5;
 
 /**
  * Version tag stamped into the OpenCode resume cursor. Bump if the cursor
@@ -1351,7 +1352,11 @@ export function makeOpenCodeAdapter(
       }
       const recover = Effect.gen(function* () {
         yield* Deferred.await(promptAdmission.acceptance);
-        for (let retryCount = 0; retryCount < 5; retryCount += 1) {
+        for (
+          let retryCount = 0;
+          retryCount < OPENCODE_PROMPT_ADMISSION_STATUS_ATTEMPTS;
+          retryCount += 1
+        ) {
           if (
             context.promptAdmission !== promptAdmission ||
             context.activeTurnId !== promptAdmission.turnId ||
@@ -1421,6 +1426,13 @@ export function makeOpenCodeAdapter(
           }
 
           const idle = promptAdmission.idleDuringAdmission ?? promptAdmission.priorIdle;
+          // OpenCode represents idle by omitting the session from `/session/status`, but a newly
+          // accepted prompt is also briefly absent before its busy state is published. Without a
+          // lifecycle event, require the full recovery window before treating absence as idle.
+          const idleStatusConfirmationTarget =
+            status?.type === "idle" || promptAdmission.busyObserved || idle !== undefined
+              ? 2
+              : OPENCODE_PROMPT_ADMISSION_STATUS_ATTEMPTS;
           if (
             isIdle &&
             idle !== undefined &&
@@ -1433,7 +1445,7 @@ export function makeOpenCodeAdapter(
           }
           if (isIdle && promptAdmission.messageObserved) {
             promptAdmission.idleStatusConfirmations += 1;
-            if (promptAdmission.idleStatusConfirmations >= 2) {
+            if (promptAdmission.idleStatusConfirmations >= idleStatusConfirmationTarget) {
               context.promptAdmission = undefined;
               context.awaitingBusyAfterInterruption = false;
               yield* completeOpenCodeTurn(
@@ -2572,6 +2584,7 @@ export function makeOpenCodeAdapter(
             context.awaitingBusyAfterInterruption = false;
             if (context.promptAdmission?.turnId === turnId) {
               context.promptAdmission.busyObserved = true;
+              context.promptAdmission.idleStatusConfirmations = 0;
               yield* schedulePromptAdmissionRecovery(context, event);
             }
             yield* updateProviderSession(context, {

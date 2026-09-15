@@ -1981,6 +1981,83 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("keeps a new turn running when busy arrives after missing status polls", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-delayed-busy-after-missing-status");
+      const busyEvent = promiseWithResolvers<unknown>();
+      const secondMissingStatus = promiseWithResolvers<void>();
+      const thirdMissingStatus = promiseWithResolvers<void>();
+      runtimeMock.state.autoPromptEcho = false;
+      runtimeMock.state.subscribedEvents = [busyEvent.promise];
+      runtimeMock.state.sessionStatusImplementation = async () => {
+        if (runtimeMock.state.sessionStatusCalls === 2) {
+          secondMissingStatus.resolve(undefined);
+        }
+        if (runtimeMock.state.sessionStatusCalls === 3) {
+          thirdMissingStatus.resolve(undefined);
+        }
+        return { data: {} };
+      };
+      runtimeMock.state.promptAsyncImplementation = async () => {
+        const prompt = runtimeMock.state.promptCalls.at(-1) as { messageID?: string } | undefined;
+        if (prompt?.messageID) {
+          runtimeMock.state.messages.push({
+            info: { id: prompt.messageID, role: "user" },
+            parts: [],
+          });
+        }
+      };
+
+      const completedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Wait for the real busy status",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+
+      yield* advanceTestClock(250);
+      yield* Effect.promise(() => secondMissingStatus.promise);
+      NodeAssert.equal(completedFiber.pollUnsafe(), undefined);
+
+      busyEvent.resolve({
+        id: "evt-delayed-busy-after-missing-status",
+        type: "session.status",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          status: { type: "busy" },
+        },
+      });
+      yield* Effect.yieldNow;
+
+      const runningSession = (yield* adapter.listSessions()).find(
+        (candidate) => candidate.threadId === threadId,
+      );
+      NodeAssert.equal(runningSession?.status, "running");
+      NodeAssert.equal(runningSession?.activeTurnId, turn.turnId);
+      NodeAssert.equal(completedFiber.pollUnsafe(), undefined);
+
+      yield* advanceTestClock(500);
+      yield* Effect.promise(() => thirdMissingStatus.promise);
+      NodeAssert.equal(completedFiber.pollUnsafe(), undefined);
+
+      yield* Fiber.interrupt(completedFiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("uses polled busy status to admit output after a stopped turn", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
