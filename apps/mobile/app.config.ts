@@ -426,6 +426,9 @@ const config: ExpoConfig = {
         android: {
           // Keep the supported floor explicit and covered by native notification tests.
           minSdkVersion: 24,
+          // The DeX display-metrics patch changes RN's native initializer; the
+          // prebuilt Android archive would ignore the patched Kotlin/Java sources.
+          buildReactNativeFromSource: true,
           // kotlinx-io uses Kotlin 2.3's return-value checker annotation, while
           // SDK 58 builds with Kotlin 2.2. It has no runtime behavior.
           //

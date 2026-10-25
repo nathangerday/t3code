@@ -1,0 +1,262 @@
+diff --git a/ReactAndroid/src/main/java/com/facebook/react/ReactRootView.java b/ReactAndroid/src/main/java/com/facebook/react/ReactRootView.java
+index f55eca6e4a7ac08d2c6e26df46c8ed78dc79e6ae..a6246e1d203dd4b114f54a735ef3fc8d8187d371 100644
+--- a/ReactAndroid/src/main/java/com/facebook/react/ReactRootView.java
++++ b/ReactAndroid/src/main/java/com/facebook/react/ReactRootView.java
+@@ -137,7 +137,7 @@ public class ReactRootView extends FrameLayout implements RootView, ReactRoot {
+     setClipChildren(false);
+ 
+     if (ReactNativeFeatureFlags.enableFontScaleChangesUpdatingLayout()) {
+-      DisplayMetricsHolder.initDisplayMetrics(getContext().getApplicationContext());
++      DisplayMetricsHolder.initDisplayMetrics(getContext());
+     }
+   }
+ 
+@@ -916,7 +916,7 @@ public class ReactRootView extends FrameLayout implements RootView, ReactRoot {
+     private int mDeviceRotation = 0;
+ 
+     /* package */ CustomGlobalLayoutListener() {
+-      DisplayMetricsHolder.initDisplayMetricsIfNotInitialized(getContext().getApplicationContext());
++      DisplayMetricsHolder.initDisplayMetricsIfNotInitialized(getContext());
+       mVisibleViewArea = new Rect();
+     }
+ 
+@@ -991,7 +991,7 @@ public class ReactRootView extends FrameLayout implements RootView, ReactRoot {
+         return;
+       }
+       mDeviceRotation = rotation;
+-      DisplayMetricsHolder.initDisplayMetrics(getContext().getApplicationContext());
++      DisplayMetricsHolder.initDisplayMetrics(getContext());
+       emitOrientationChanged(rotation);
+     }
+ 
+diff --git a/ReactAndroid/src/main/java/com/facebook/react/runtime/ReactHostImpl.kt b/ReactAndroid/src/main/java/com/facebook/react/runtime/ReactHostImpl.kt
+index 4db89e7a31433e72950e538591839feb97a404d5..6bbdb2798169cbeefa53055edcf7f2dd6629bb98 100644
+--- a/ReactAndroid/src/main/java/com/facebook/react/runtime/ReactHostImpl.kt
++++ b/ReactAndroid/src/main/java/com/facebook/react/runtime/ReactHostImpl.kt
+@@ -735,7 +735,7 @@ public class ReactHostImpl(
+     if (currentReactContext != null) {
+       if (ReactNativeFeatureFlags.enableFontScaleChangesUpdatingLayout()) {
+         val previousFontScale = PixelUtil.toPixelFromSP(1.0)
+-        DisplayMetricsHolder.initDisplayMetrics(currentReactContext)
++        DisplayMetricsHolder.initDisplayMetrics(context)
+         val newFontScale = PixelUtil.toPixelFromSP(1.0)
+ 
+         if (previousFontScale != newFontScale) {
+diff --git a/ReactAndroid/src/main/java/com/facebook/react/uimanager/DisplayMetricsHolder.kt b/ReactAndroid/src/main/java/com/facebook/react/uimanager/DisplayMetricsHolder.kt
+index 7dd31eb758d568c3c1846b39839dc29d19729c4d..a486b823b8107b311dfd9f5dee5446008a557748 100644
+--- a/ReactAndroid/src/main/java/com/facebook/react/uimanager/DisplayMetricsHolder.kt
++++ b/ReactAndroid/src/main/java/com/facebook/react/uimanager/DisplayMetricsHolder.kt
+@@ -10,10 +10,12 @@ package com.facebook.react.uimanager
+ import android.annotation.SuppressLint
+ import android.app.Activity
+ import android.content.Context
++import android.graphics.Point
+ import android.util.DisplayMetrics
+ import android.view.WindowManager
+ import androidx.core.view.ViewCompat
+ import androidx.core.view.WindowInsetsCompat
++import com.facebook.react.bridge.ReactContext
+ import com.facebook.react.uimanager.PixelUtil.pxToDp
+ 
+ /**
+@@ -50,21 +52,23 @@ public object DisplayMetricsHolder {
+   @SuppressLint("DeprecatedMethod") // for Android Lint
+   @Suppress("DEPRECATION") // for Kotlin compiler
+   public fun initDisplayMetrics(context: Context) {
+-    val displayMetrics = context.resources.displayMetrics
++    val displayContext = (context as? ReactContext)?.currentActivity ?: context
++    val displayMetrics = displayContext.resources.displayMetrics
+     val screenDisplayMetrics = DisplayMetrics()
+     screenDisplayMetrics.setTo(displayMetrics)
+     try {
+-      val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+-      // getRealMetrics includes system decor (e.g. nav bar) excluded from resource metrics.
+-      wm.defaultDisplay.getRealMetrics(screenDisplayMetrics)
++      val wm = displayContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
++      // Only the screen size comes from the display. On external displays (e.g. DeX),
++      // getRealMetrics can overwrite the window's density with the phone's density.
++      // Preserve the complete resource metrics, including nonlinear font scaling.
++      val screenSize = Point()
++      wm.defaultDisplay.getRealSize(screenSize)
++      screenDisplayMetrics.widthPixels = screenSize.x
++      screenDisplayMetrics.heightPixels = screenSize.y
+     } catch (_: Exception) {
+       // Non-visual contexts (e.g. Application) may throw on API 30+.
+       // Falls back to resource display metrics copied via setTo() above.
+     }
+-    // Preserve fontScale from the configuration because getRealMetrics() returns
+-    // physical display metrics without the system font scale setting.
+-    // This is needed for proper text scaling when fontScale < 1.0
+-    screenDisplayMetrics.scaledDensity = displayMetrics.scaledDensity
+     DisplayMetricsHolder.screenDisplayMetrics = screenDisplayMetrics
+   }
+ 
+diff --git a/ReactAndroid/src/test/java/com/facebook/react/uimanager/DisplayMetricsHolderTest.kt b/ReactAndroid/src/test/java/com/facebook/react/uimanager/DisplayMetricsHolderTest.kt
+new file mode 100644
+--- /dev/null
++++ b/ReactAndroid/src/test/java/com/facebook/react/uimanager/DisplayMetricsHolderTest.kt
+@@ -0,0 +1,164 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the MIT license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++package com.facebook.react.uimanager
++
++import android.app.Activity
++import android.content.Context
++import android.content.res.Configuration
++import android.content.res.Resources
++import android.graphics.Point
++import android.util.DisplayMetrics
++import android.util.TypedValue
++import android.view.Display
++import android.view.WindowManager
++import com.facebook.react.bridge.ReactContext
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertNotSame
++import org.junit.Before
++import org.junit.Test
++import org.junit.runner.RunWith
++import org.mockito.kotlin.any
++import org.mockito.kotlin.doAnswer
++import org.mockito.kotlin.mock
++import org.mockito.kotlin.whenever
++import org.robolectric.RobolectricTestRunner
++import org.robolectric.RuntimeEnvironment
++import org.robolectric.annotation.Config
++
++@RunWith(RobolectricTestRunner::class)
++@Config(manifest = Config.NONE, sdk = [28, 34])
++class DisplayMetricsHolderTest {
++  @Before
++  fun resetMetrics() {
++    DisplayMetricsHolder.setScreenDisplayMetrics(null)
++  }
++
++  @Test
++  fun preservesWindowDensityWhenDefaultDisplayHasPhoneDensity() {
++    val window = metrics(1f, 1.25f)
++    val context = displayContext(window, 1920, 1080)
++
++    DisplayMetricsHolder.initDisplayMetrics(context)
++
++    assertMetrics(window, 1920, 1080)
++    assertEquals(720, window.widthPixels)
++    assertEquals(600, window.heightPixels)
++    assertNotSame(window, DisplayMetricsHolder.getScreenDisplayMetrics())
++  }
++
++  @Test
++  fun everyInitializationIsConsistentAcrossPhoneDexAndRotation() {
++    val phone = metrics(3f, 1.25f)
++    val dex = metrics(1f, 1.25f)
++    val contexts = listOf(
++        Triple(displayContext(phone, 1080, 2400), phone, Point(1080, 2400)),
++        Triple(displayContext(dex, 1920, 1080), dex, Point(1920, 1080)),
++        Triple(displayContext(dex, 1080, 1920), dex, Point(1080, 1920)),
++        Triple(displayContext(phone, 1080, 2400), phone, Point(1080, 2400)),
++    )
++
++    for ((context, window, screenSize) in contexts) {
++      repeat(3) {
++        DisplayMetricsHolder.initDisplayMetrics(context)
++        // Measurement immediately after any reset must already use the window's scale.
++        assertMetrics(window, screenSize.x, screenSize.y)
++      }
++    }
++  }
++
++  @Test
++  fun reactContextUsesTheCurrentActivityDisplay() {
++    val activity = mock<Activity>()
++    val window = metrics(1f, 1f)
++    displayContext(window, 1920, 1080, activity)
++    val reactContext = mock<ReactContext>()
++    displayContext(metrics(3f, 1f), 1080, 2400, reactContext)
++    whenever(reactContext.currentActivity).thenReturn(activity)
++
++    DisplayMetricsHolder.initDisplayMetrics(reactContext)
++
++    assertMetrics(window, 1920, 1080)
++  }
++
++  @Test
++  fun preservesResourceFontConversion() {
++    val configuration = Configuration().apply {
++      densityDpi = 160
++      fontScale = 1.5f
++    }
++    val window = RuntimeEnvironment.getApplication()
++        .createConfigurationContext(configuration).resources.displayMetrics
++
++    DisplayMetricsHolder.initDisplayMetrics(displayContext(window, 1920, 1080))
++
++    assertMetrics(window, 1920, 1080)
++  }
++
++  @Test
++  fun nonVisualContextsKeepResourceMetrics() {
++    val window = metrics(2f, 0.85f)
++    val context = displayContext(window, 1920, 1080)
++    whenever(context.getSystemService(Context.WINDOW_SERVICE))
++        .thenThrow(UnsupportedOperationException("Not a visual context"))
++
++    DisplayMetricsHolder.initDisplayMetrics(context)
++
++    assertMetrics(window, window.widthPixels, window.heightPixels)
++  }
++
++  private fun metrics(density: Float, fontScale: Float): DisplayMetrics =
++      DisplayMetrics().apply {
++        this.density = density
++        densityDpi = (density * 160).toInt()
++        scaledDensity = density * fontScale
++        widthPixels = 720
++        heightPixels = 600
++      }
++
++  @Suppress("DEPRECATION")
++  private fun displayContext(
++      window: DisplayMetrics,
++      width: Int,
++      height: Int,
++      context: Context = mock(),
++  ): Context {
++    val resources = mock<Resources>()
++    val display = mock<Display>()
++    val windowManager = mock<WindowManager>()
++    whenever(context.resources).thenReturn(resources)
++    whenever(resources.displayMetrics).thenReturn(window)
++    whenever(context.getSystemService(Context.WINDOW_SERVICE)).thenReturn(windowManager)
++    whenever(windowManager.defaultDisplay).thenReturn(display)
++    doAnswer {
++      it.getArgument<Point>(0).set(width, height)
++      null
++    }.whenever(display).getRealSize(any())
++    doAnswer {
++      it.getArgument<DisplayMetrics>(0).setTo(metrics(3f, 1f))
++      null
++    }.whenever(display).getRealMetrics(any())
++    return context
++  }
++
++  private fun assertMetrics(window: DisplayMetrics, width: Int, height: Int) {
++    val cached = DisplayMetricsHolder.getScreenDisplayMetrics()
++    assertEquals(window.density, cached.density, 0f)
++    assertEquals(window.densityDpi, cached.densityDpi)
++    assertEquals(window.scaledDensity, cached.scaledDensity, 0f)
++    assertEquals(width, cached.widthPixels)
++    assertEquals(height, cached.heightPixels)
++    assertEquals(23f, PixelUtil.toDIPFromPixel(23 * window.density), 0.001f)
++    for (size in listOf(12f, 16f, 32f)) {
++      assertEquals(
++          TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, size, window),
++          PixelUtil.toPixelFromSP(size),
++          0f,
++      )
++    }
++  }
++}
